@@ -2,11 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { Play, Pause, RotateCcw } from 'lucide-react';
 
 const EmergencyComparisonSimulation = () => {
+  // 状态变量
   const [scenario, setScenario] = useState('medium');
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [initialTasksData, setInitialTasksData] = useState([]);
   const [totalInitialVictims, setTotalInitialVictims] = useState(0);
+  const [rescueCenterPosition, setRescueCenterPosition] = useState({ x: 50, y: 50 });
   
   // 三个独立的模拟
   const [nearestSimulation, setNearestSimulation] = useState({
@@ -202,28 +204,47 @@ const EmergencyComparisonSimulation = () => {
     const newTasks = [];
     let initialVictims = 0;
     
-    // 创建确定性随机数来保证三个模拟使用相同的任务
-    let seedValue = 12345 + scenario.length;
+    // 使用当前时间戳作为随机种子，确保每次运行都有不同的随机地图
+    // 但同一次模拟中的三个算法会使用完全相同的地图
+    let seedValue = Date.now();
     const random = () => {
       seedValue = (seedValue * 9301 + 49297) % 233280;
       return seedValue / 233280;
     };
     
+    // 随机生成救援中心位置
+    const centerX = random() * 60 + 20; // 20-80 范围内
+    const centerY = random() * 60 + 20; // 20-80 范围内
+    
+    // 保存救援中心位置
+    setRescueCenterPosition({ x: centerX, y: centerY });
+    
     for (let i = 0; i < numTasks; i++) {
-      const position = {
-        x: random() * 80 + 10,
-        y: random() * 80 + 10
-      };
-      const distance = Math.sqrt(Math.pow(position.x - 50, 2) + Math.pow(position.y - 50, 2));
+      // 随机生成灾情点位置，避免与救援中心重叠
+      let x, y;
+      do {
+        x = random() * 80 + 10; // 10-90 范围内
+        y = random() * 80 + 10; // 10-90 范围内
+      } while (Math.sqrt(Math.pow(x - centerX, 2) + Math.pow(y - centerY, 2)) < 5); // 确保与救援中心有一定距离
+      
+      const position = { x, y };
+      
+      // 距离越远，报告时间越长
+      const distance = Math.sqrt(Math.pow(position.x - centerX, 2) + Math.pow(position.y - centerY, 2));
       const reportTime = distance / 5;
+      
+      // 随机生成受灾人数 (50-500)
       const victims = Math.floor(random() * 450) + 50;
+      
+      // 随机衰减率 (0.1-0.2)，表示情况紧急程度
+      const declineRate = 0.1 + random() * 0.1;
       
       newTasks.push({
         id: i,
         ...position,
         initialVictims: victims,
         currentVictims: victims,
-        declineRate: 0.15,
+        declineRate: declineRate,
         reported: false,
         reportTime: reportTime
       });
@@ -238,7 +259,7 @@ const EmergencyComparisonSimulation = () => {
     // 重置三个模拟
     setNearestSimulation({
       tasks: JSON.parse(JSON.stringify(newTasks)),
-      rescuerPosition: { x: 50, y: 50 },
+      rescuerPosition: { x: centerX, y: centerY },
       rescuerState: 'IDLE',
       currentTaskId: null,
       rescued: 0,
@@ -249,7 +270,7 @@ const EmergencyComparisonSimulation = () => {
     
     setLargestSimulation({
       tasks: JSON.parse(JSON.stringify(newTasks)),
-      rescuerPosition: { x: 50, y: 50 },
+      rescuerPosition: { x: centerX, y: centerY },
       rescuerState: 'IDLE',
       currentTaskId: null,
       rescued: 0,
@@ -262,11 +283,11 @@ const EmergencyComparisonSimulation = () => {
     setMultiAgentSimulation({
       tasks: JSON.parse(JSON.stringify(newTasks)),
       rescuers: [
-        { id: 1, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'NEAREST' },
-        { id: 2, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'LARGEST' },
-        { id: 3, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'NEAREST' },
-        { id: 4, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'LARGEST' },
-        { id: 5, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'HYBRID' }
+        { id: 1, position: { x: centerX, y: centerY }, state: 'IDLE', currentTaskId: null, type: 'NEAREST' },
+        { id: 2, position: { x: centerX, y: centerY }, state: 'IDLE', currentTaskId: null, type: 'LARGEST' },
+        { id: 3, position: { x: centerX, y: centerY }, state: 'IDLE', currentTaskId: null, type: 'NEAREST' },
+        { id: 4, position: { x: centerX, y: centerY }, state: 'IDLE', currentTaskId: null, type: 'LARGEST' },
+        { id: 5, position: { x: centerX, y: centerY }, state: 'IDLE', currentTaskId: null, type: 'HYBRID' }
       ],
       rescued: 0,
       results: null,
@@ -806,15 +827,9 @@ const EmergencyComparisonSimulation = () => {
           <div style={styles.buttonGroup}>
             <button 
               onClick={() => setIsPlaying(!isPlaying)}
-              style={{...styles.button, ...styles.buttonBlue}}
+              style={{...styles.button, ...styles.buttonBlue, flex: 1}}
             >
-              {isPlaying ? <Pause size={20} /> : <Play size={20} />}
-            </button>
-            <button 
-              onClick={initializeScenario}
-              style={{...styles.button, ...styles.buttonGray}}
-            >
-              <RotateCcw size={20} />
+              {isPlaying ? <><Pause size={20} /> 暂停</> : <><Play size={20} /> 开始</>}
             </button>
           </div>
         </div>
@@ -826,6 +841,29 @@ const EmergencyComparisonSimulation = () => {
           <p>救援人员: 每算法15名</p>
           <p>总受灾人数: {Math.round(totalInitialVictims)}</p>
         </div>
+      </div>
+      
+      <div style={{...styles.card, marginBottom: '16px'}}>
+        <button 
+          onClick={initializeScenario}
+          style={{
+            padding: '12px 24px',
+            background: '#4b5563',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            fontWeight: 'bold',
+            width: '100%',
+            justifyContent: 'center',
+            fontSize: '16px'
+          }}
+        >
+          <RotateCcw size={20} /> 生成新的随机地图
+        </button>
       </div>
       
       {/* 最近任务优先地图 */}
@@ -859,8 +897,8 @@ const EmergencyComparisonSimulation = () => {
           style={{
             ...styles.circle,
             ...styles.rescuerCenter,
-            left: '50%',
-            top: '50%'
+            left: `${rescueCenterPosition.x}%`,
+            top: `${rescueCenterPosition.y}%`
           }}
         />
         
@@ -927,8 +965,8 @@ const EmergencyComparisonSimulation = () => {
           style={{
             ...styles.circle,
             ...styles.rescuerCenter,
-            left: '50%',
-            top: '50%'
+            left: `${rescueCenterPosition.x}%`,
+            top: `${rescueCenterPosition.y}%`
           }}
         />
         
@@ -996,8 +1034,8 @@ const EmergencyComparisonSimulation = () => {
           style={{
             ...styles.circle,
             ...styles.rescuerCenter,
-            left: '50%',
-            top: '50%'
+            left: `${rescueCenterPosition.x}%`,
+            top: `${rescueCenterPosition.y}%`
           }}
         />
         
