@@ -8,14 +8,16 @@ const EmergencyComparisonSimulation = () => {
   const [initialTasksData, setInitialTasksData] = useState([]);
   const [totalInitialVictims, setTotalInitialVictims] = useState(0);
   
-  // 两个独立的模拟
+  // 三个独立的模拟
   const [nearestSimulation, setNearestSimulation] = useState({
     tasks: [],
     rescuerPosition: { x: 50, y: 50 },
     rescuerState: 'IDLE',
     currentTaskId: null,
     rescued: 0,
-    results: null
+    results: null,
+    completed: false,
+    completionTime: null
   });
   
   const [largestSimulation, setLargestSimulation] = useState({
@@ -24,7 +26,27 @@ const EmergencyComparisonSimulation = () => {
     rescuerState: 'IDLE',
     currentTaskId: null,
     rescued: 0,
-    results: null
+    results: null,
+    completed: false,
+    completionTime: null
+  });
+  
+  // 新增：多智能体模拟
+  const [multiAgentSimulation, setMultiAgentSimulation] = useState({
+    tasks: [],
+    // 五个独立救援小队，每队3人
+    rescuers: [
+      { id: 1, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'NEAREST' },
+      { id: 2, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'LARGEST' },
+      { id: 3, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'NEAREST' },
+      { id: 4, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'LARGEST' },
+      { id: 5, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'HYBRID' }
+    ],
+    rescued: 0,
+    results: null,
+    taskAssignments: {}, // 记录哪个任务被哪个救援队分配了
+    completed: false,
+    completionTime: null
   });
   
   // 样式定义
@@ -180,7 +202,7 @@ const EmergencyComparisonSimulation = () => {
     const newTasks = [];
     let initialVictims = 0;
     
-    // 创建确定性随机数来保证两个模拟使用相同的任务
+    // 创建确定性随机数来保证三个模拟使用相同的任务
     let seedValue = 12345 + scenario.length;
     const random = () => {
       seedValue = (seedValue * 9301 + 49297) % 233280;
@@ -213,14 +235,16 @@ const EmergencyComparisonSimulation = () => {
     setInitialTasksData(newTasks);
     setTotalInitialVictims(initialVictims);
     
-    // 重置两个模拟
+    // 重置三个模拟
     setNearestSimulation({
       tasks: JSON.parse(JSON.stringify(newTasks)),
       rescuerPosition: { x: 50, y: 50 },
       rescuerState: 'IDLE',
       currentTaskId: null,
       rescued: 0,
-      results: null
+      results: null,
+      completed: false,
+      completionTime: null
     });
     
     setLargestSimulation({
@@ -229,7 +253,26 @@ const EmergencyComparisonSimulation = () => {
       rescuerState: 'IDLE',
       currentTaskId: null,
       rescued: 0,
-      results: null
+      results: null,
+      completed: false,
+      completionTime: null
+    });
+    
+    // 重置多智能体模拟
+    setMultiAgentSimulation({
+      tasks: JSON.parse(JSON.stringify(newTasks)),
+      rescuers: [
+        { id: 1, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'NEAREST' },
+        { id: 2, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'LARGEST' },
+        { id: 3, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'NEAREST' },
+        { id: 4, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'LARGEST' },
+        { id: 5, position: { x: 50, y: 50 }, state: 'IDLE', currentTaskId: null, type: 'HYBRID' }
+      ],
+      rescued: 0,
+      results: null,
+      taskAssignments: {},
+      completed: false,
+      completionTime: null
     });
     
     setCurrentTime(0);
@@ -443,6 +486,167 @@ const EmergencyComparisonSimulation = () => {
       
       return updatedSimulation;
     });
+    
+    // 更新多智能体模拟
+    setMultiAgentSimulation(prev => {
+      const updatedSimulation = { ...prev };
+      let rescuedThisStep = 0;
+      
+      // 更新任务状态
+      updatedSimulation.tasks = prev.tasks.map(task => {
+        let updated = { ...task };
+        
+        // 报告逻辑
+        if (!updated.reported && currentTime >= updated.reportTime) {
+          updated.reported = true;
+        }
+        
+        // 人数下降逻辑
+        if (updated.reported && updated.currentVictims > 0) {
+          const decline = updated.initialVictims * updated.declineRate * 0.1 / 60;
+          updated.currentVictims = Math.max(0, updated.currentVictims - decline);
+        }
+        
+        return updated;
+      });
+      
+      // 创建任务分配计划
+      // 更新救援队伍
+      updatedSimulation.rescuers = prev.rescuers.map(rescuer => {
+        const updatedRescuer = { ...rescuer };
+        
+        // 根据救援队员的状态更新
+        switch (updatedRescuer.state) {
+          case 'IDLE':
+            // 空闲状态，选择新任务
+            // 只考虑已报告且还有受灾人员的任务
+            const availableTasks = updatedSimulation.tasks.filter(task => 
+              task.reported && task.currentVictims > 0
+            );
+            
+            if (availableTasks.length > 0) {
+              let selectedTask;
+              
+              // 基于救援队类型选择任务
+              if (updatedRescuer.type === 'NEAREST') {
+                // 最近任务优先
+                selectedTask = availableTasks.reduce((closest, task) => {
+                  // 避免选择已经被其他救援队分配的任务，除非没有其他选择
+                  if (updatedSimulation.taskAssignments[task.id] && availableTasks.length > 1) {
+                    return closest;
+                  }
+                  
+                  const distToCurrent = getDistance(updatedRescuer.position, task);
+                  const distToClosest = getDistance(updatedRescuer.position, closest);
+                  return distToCurrent < distToClosest ? task : closest;
+                });
+              } else if (updatedRescuer.type === 'LARGEST') {
+                // 最大任务优先
+                selectedTask = availableTasks.reduce((largest, task) => {
+                  // 避免选择已经被其他救援队分配的任务，除非没有其他选择
+                  if (updatedSimulation.taskAssignments[task.id] && availableTasks.length > 1) {
+                    return largest;
+                  }
+                  
+                  return task.currentVictims > largest.currentVictims ? task : largest;
+                });
+              } else {
+                // HYBRID - 综合考虑距离和任务大小
+                selectedTask = availableTasks.reduce((best, task) => {
+                  // 避免选择已经被其他救援队分配的任务，除非没有其他选择
+                  if (updatedSimulation.taskAssignments[task.id] && availableTasks.length > 1) {
+                    return best;
+                  }
+                  
+                  const distToCurrent = getDistance(updatedRescuer.position, task);
+                  const distToBest = getDistance(updatedRescuer.position, best);
+                  
+                  // 混合评分：距离和任务大小的加权组合
+                  // 距离越近越好，任务越大越好
+                  const currentScore = (task.currentVictims / distToCurrent);
+                  const bestScore = (best.currentVictims / distToBest);
+                  
+                  return currentScore > bestScore ? task : best;
+                });
+              }
+              
+              // 更新任务分配
+              updatedSimulation.taskAssignments = {
+                ...updatedSimulation.taskAssignments,
+                [selectedTask.id]: updatedRescuer.id
+              };
+              
+              updatedRescuer.currentTaskId = selectedTask.id;
+              updatedRescuer.state = 'MOVING_TO_TASK';
+            }
+            break;
+            
+          case 'MOVING_TO_TASK':
+            // 移动到任务点
+            if (updatedRescuer.currentTaskId !== null) {
+              const task = updatedSimulation.tasks.find(t => t.id === updatedRescuer.currentTaskId);
+              if (task) {
+                const distance = getDistance(updatedRescuer.position, task);
+                
+                if (distance < 1) {
+                  // 到达目标位置
+                  updatedRescuer.position = { x: task.x, y: task.y };
+                  updatedRescuer.state = 'AT_TASK';
+                } else {
+                  // 继续移动
+                  const moveSpeed = 1;
+                  const dx = task.x - updatedRescuer.position.x;
+                  const dy = task.y - updatedRescuer.position.y;
+                  
+                  updatedRescuer.position = {
+                    x: updatedRescuer.position.x + (dx / distance) * moveSpeed,
+                    y: updatedRescuer.position.y + (dy / distance) * moveSpeed
+                  };
+                }
+              }
+            }
+            break;
+            
+          case 'AT_TASK':
+            // 执行救援
+            if (updatedRescuer.currentTaskId !== null) {
+              const taskIndex = updatedSimulation.tasks.findIndex(t => t.id === updatedRescuer.currentTaskId);
+              if (taskIndex !== -1) {
+                const task = updatedSimulation.tasks[taskIndex];
+                
+                if (task.currentVictims <= 0) {
+                  // 任务完成，释放任务分配
+                  delete updatedSimulation.taskAssignments[updatedRescuer.currentTaskId];
+                  updatedRescuer.currentTaskId = null;
+                  updatedRescuer.state = 'IDLE';
+                } else {
+                  // 单个救援队每次救援能力为6人（一个救援队有3人）
+                  const maxPossibleRescue = Math.min(task.currentVictims, 6);
+                  const actualRescued = Math.min(maxPossibleRescue, totalInitialVictims - (updatedSimulation.rescued + rescuedThisStep));
+                  
+                  if (actualRescued > 0) {
+                    rescuedThisStep += actualRescued;
+                    // 更新任务
+                    updatedSimulation.tasks = [...updatedSimulation.tasks];
+                    updatedSimulation.tasks[taskIndex] = {
+                      ...task,
+                      currentVictims: Math.max(0, task.currentVictims - actualRescued)
+                    };
+                  }
+                }
+              }
+            }
+            break;
+        }
+        
+        return updatedRescuer;
+      });
+      
+      // 更新总救援人数
+      updatedSimulation.rescued = Math.min(updatedSimulation.rescued + rescuedThisStep, totalInitialVictims);
+      
+      return updatedSimulation;
+    });
   };
   
   const getDistance = (pos1, pos2) => {
@@ -459,35 +663,125 @@ const EmergencyComparisonSimulation = () => {
       interval = setInterval(() => {
         updateSimulation();
         
-        // 检查结束条件
-        const nearestCompleted = nearestSimulation.tasks.every(task => task.currentVictims <= 0);
-        const largestCompleted = largestSimulation.tasks.every(task => task.currentVictims <= 0);
+        // 检查每个模拟是否已完成其所有任务
+        setNearestSimulation(prev => {
+          if (!prev.completed && prev.tasks.every(task => task.currentVictims <= 0)) {
+            return {
+              ...prev,
+              completed: true,
+              completionTime: currentTime,
+              results: {
+                successRate: prev.rescued / totalInitialVictims,
+                time: currentTime
+              }
+            };
+          }
+          return prev;
+        });
+        
+        setLargestSimulation(prev => {
+          if (!prev.completed && prev.tasks.every(task => task.currentVictims <= 0)) {
+            return {
+              ...prev,
+              completed: true,
+              completionTime: currentTime,
+              results: {
+                successRate: prev.rescued / totalInitialVictims,
+                time: currentTime
+              }
+            };
+          }
+          return prev;
+        });
+        
+        setMultiAgentSimulation(prev => {
+          if (!prev.completed && prev.tasks.every(task => task.currentVictims <= 0)) {
+            return {
+              ...prev,
+              completed: true,
+              completionTime: currentTime,
+              results: {
+                successRate: prev.rescued / totalInitialVictims,
+                time: currentTime
+              }
+            };
+          }
+          return prev;
+        });
+        
+        // 检查是否所有模拟都已完成或者超时
+        const allCompleted = nearestSimulation.completed && 
+                            largestSimulation.completed && 
+                            multiAgentSimulation.completed;
         const timeExceeded = currentTime >= 300;
         
-        if ((nearestCompleted && largestCompleted) || timeExceeded) {
+        if (allCompleted || timeExceeded) {
           setIsPlaying(false);
           
-          setNearestSimulation(prev => ({
-            ...prev,
-            results: {
-              successRate: prev.rescued / totalInitialVictims,
-              time: currentTime
-            }
-          }));
+          // 处理任何尚未完成但时间已超时的模拟
+          if (!nearestSimulation.completed) {
+            setNearestSimulation(prev => ({
+              ...prev,
+              completed: true,
+              completionTime: currentTime,
+              results: {
+                successRate: prev.rescued / totalInitialVictims,
+                time: currentTime
+              }
+            }));
+          }
           
-          setLargestSimulation(prev => ({
-            ...prev,
-            results: {
-              successRate: prev.rescued / totalInitialVictims,
-              time: currentTime
-            }
-          }));
+          if (!largestSimulation.completed) {
+            setLargestSimulation(prev => ({
+              ...prev,
+              completed: true,
+              completionTime: currentTime,
+              results: {
+                successRate: prev.rescued / totalInitialVictims,
+                time: currentTime
+              }
+            }));
+          }
+          
+          if (!multiAgentSimulation.completed) {
+            setMultiAgentSimulation(prev => ({
+              ...prev,
+              completed: true,
+              completionTime: currentTime,
+              results: {
+                successRate: prev.rescued / totalInitialVictims,
+                time: currentTime
+              }
+            }));
+          }
         }
       }, 100);
     }
     
     return () => clearInterval(interval);
-  }, [isPlaying, currentTime, nearestSimulation, largestSimulation, totalInitialVictims]);
+  }, [isPlaying, currentTime, nearestSimulation, largestSimulation, multiAgentSimulation, totalInitialVictims]);
+  
+  // 确定哪种算法救援效果最好
+  const getBestAlgorithm = () => {
+    if (!nearestSimulation.results || !largestSimulation.results || !multiAgentSimulation.results) {
+      return null;
+    }
+    
+    const rates = [
+      { name: "最近任务优先", rate: nearestSimulation.results.successRate, time: nearestSimulation.completionTime },
+      { name: "最大任务优先", rate: largestSimulation.results.successRate, time: largestSimulation.completionTime },
+      { name: "多智能体策略", rate: multiAgentSimulation.results.successRate, time: multiAgentSimulation.completionTime }
+    ];
+    
+    // 首先按成功率排序，如果成功率相同则按完成时间排序
+    return rates.sort((a, b) => {
+      if (a.rate !== b.rate) {
+        return b.rate - a.rate; // 成功率降序
+      }
+      // 如果成功率相同，比较完成时间
+      return a.time - b.time; // 完成时间升序
+    })[0];
+  };
   
   return (
     <div style={styles.container}>
@@ -670,8 +964,85 @@ const EmergencyComparisonSimulation = () => {
         </div>
       </div>
       
+      {/* 多智能体算法地图 */}
+      <div style={{...styles.mapContainer, borderColor: '#10b981'}}>
+        <div style={styles.mapLabel}>多智能体策略</div>
+        
+        {/* 救援进度条 */}
+        <div style={{
+          position: 'absolute',
+          right: '10px',
+          top: '10px',
+          background: 'white',
+          padding: '10px',
+          borderRadius: '4px',
+          width: '200px',
+          zIndex: 10
+        }}>
+          <div>救援进度: {(Math.min(multiAgentSimulation.rescued / totalInitialVictims, 1) * 100).toFixed(1)}%</div>
+          <div style={styles.progressBar}>
+            <div 
+              style={{
+                ...styles.progressFill,
+                width: `${Math.min(multiAgentSimulation.rescued / totalInitialVictims, 1) * 100}%`,
+                backgroundColor: '#10b981'
+              }}
+            />
+          </div>
+        </div>
+        
+        {/* 救援中心 */}
+        <div 
+          style={{
+            ...styles.circle,
+            ...styles.rescuerCenter,
+            left: '50%',
+            top: '50%'
+          }}
+        />
+        
+        {/* 灾情点 */}
+        {multiAgentSimulation.tasks.map(task => (
+          <div
+            key={task.id}
+            style={{
+              ...styles.circle,
+              ...styles.taskCircle,
+              ...(task.reported ? styles.taskOrange : styles.taskGray),
+              left: `${task.x}%`,
+              top: `${task.y}%`,
+              opacity: task.currentVictims > 0 ? 1 : 0.3,
+              border: multiAgentSimulation.taskAssignments[task.id] ? '3px solid green' : '2px solid black'
+            }}
+          >
+            {Math.round(task.currentVictims)}
+          </div>
+        ))}
+        
+        {/* 救援队伍 */}
+        {multiAgentSimulation.rescuers.map(rescuer => (
+          <div
+            key={rescuer.id}
+            style={{
+              ...styles.circle,
+              ...styles.rescuerTeam,
+              left: `${rescuer.position.x}%`,
+              top: `${rescuer.position.y}%`,
+              backgroundColor: 
+                rescuer.type === 'NEAREST' ? '#10b981' : 
+                rescuer.type === 'LARGEST' ? '#8b5cf6' : 
+                '#f59e0b', // HYBRID
+              width: '18px',
+              height: '18px'
+            }}
+          >
+            {rescuer.id}
+          </div>
+        ))}
+      </div>
+      
       {/* 对比结果 */}
-      {(nearestSimulation.results || largestSimulation.results) && (
+      {(nearestSimulation.results || largestSimulation.results || multiAgentSimulation.results) && (
         <div style={{...styles.card, marginTop: '16px'}}>
           <h3 style={{ fontWeight: '600', marginBottom: '8px' }}>模拟结果对比</h3>
           <div style={{display: 'flex', gap: '16px'}}>
@@ -679,7 +1050,7 @@ const EmergencyComparisonSimulation = () => {
               <h4 style={{fontWeight: 'bold', color: '#3b82f6'}}>最近任务优先</h4>
               <ul style={styles.legendList}>
                 <li>成功率: {nearestSimulation.results ? (nearestSimulation.results.successRate * 100).toFixed(1) : 0}%</li>
-                <li>完成时间: {nearestSimulation.results ? nearestSimulation.results.time.toFixed(1) : 0} 分钟</li>
+                <li>完成时间: {nearestSimulation.completionTime ? nearestSimulation.completionTime.toFixed(1) : "未完成"} 分钟</li>
                 <li>救援人数: {Math.round(nearestSimulation.rescued)}</li>
               </ul>
             </div>
@@ -687,20 +1058,26 @@ const EmergencyComparisonSimulation = () => {
               <h4 style={{fontWeight: 'bold', color: '#ef4444'}}>最大任务优先</h4>
               <ul style={styles.legendList}>
                 <li>成功率: {largestSimulation.results ? (largestSimulation.results.successRate * 100).toFixed(1) : 0}%</li>
-                <li>完成时间: {largestSimulation.results ? largestSimulation.results.time.toFixed(1) : 0} 分钟</li>
+                <li>完成时间: {largestSimulation.completionTime ? largestSimulation.completionTime.toFixed(1) : "未完成"} 分钟</li>
                 <li>救援人数: {Math.round(largestSimulation.rescued)}</li>
+              </ul>
+            </div>
+            <div style={{flex: 1}}>
+              <h4 style={{fontWeight: 'bold', color: '#10b981'}}>多智能体策略</h4>
+              <ul style={styles.legendList}>
+                <li>成功率: {multiAgentSimulation.results ? (multiAgentSimulation.results.successRate * 100).toFixed(1) : 0}%</li>
+                <li>完成时间: {multiAgentSimulation.completionTime ? multiAgentSimulation.completionTime.toFixed(1) : "未完成"} 分钟</li>
+                <li>救援人数: {Math.round(multiAgentSimulation.rescued)}</li>
               </ul>
             </div>
           </div>
           <div style={{marginTop: '16px'}}>
             <h4 style={{fontWeight: 'bold'}}>胜出策略:</h4>
-            {nearestSimulation.results && largestSimulation.results && (
+            {nearestSimulation.results && largestSimulation.results && multiAgentSimulation.results && (
               <p style={{fontSize: '16px', fontWeight: 'bold'}}>
-                {nearestSimulation.results.successRate > largestSimulation.results.successRate 
-                  ? "最近任务优先 (更高的救援成功率)" 
-                  : nearestSimulation.results.successRate < largestSimulation.results.successRate
-                    ? "最大任务优先 (更高的救援成功率)"
-                    : "平局 (救援成功率相同)"}
+                {getBestAlgorithm()?.name} 
+                (成功率: {(getBestAlgorithm()?.rate * 100).toFixed(1)}%, 
+                完成时间: {getBestAlgorithm()?.time?.toFixed(1) || "未完成"} 分钟)
               </p>
             )}
           </div>
@@ -770,6 +1147,57 @@ const EmergencyComparisonSimulation = () => {
               15
             </div>
             <span>最大任务优先救援队伍</span>
+          </li>
+          <li style={styles.legendItem}>
+            <div style={{
+              width: '18px',
+              height: '18px',
+              background: '#10b981',
+              borderRadius: '50%',
+              border: '2px solid white',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'white',
+              fontSize: '10px'
+            }}>
+              1
+            </div>
+            <span>多智能体-最近任务优先队伍</span>
+          </li>
+          <li style={styles.legendItem}>
+            <div style={{
+              width: '18px',
+              height: '18px',
+              background: '#8b5cf6',
+              borderRadius: '50%',
+              border: '2px solid white',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'white',
+              fontSize: '10px'
+            }}>
+              2
+            </div>
+            <span>多智能体-最大任务优先队伍</span>
+          </li>
+          <li style={styles.legendItem}>
+            <div style={{
+              width: '18px',
+              height: '18px',
+              background: '#f59e0b',
+              borderRadius: '50%',
+              border: '2px solid white',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'white',
+              fontSize: '10px'
+            }}>
+              5
+            </div>
+            <span>多智能体-混合策略队伍</span>
           </li>
           <li style={styles.legendItem}>
             <div style={{
